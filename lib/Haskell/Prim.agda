@@ -78,6 +78,8 @@ instance
   iNumberNat .Number.Constraint _ = ⊤
   iNumberNat .fromNat n = n
 
+pred : Nat → Nat
+pred = (flip monusNat 1)
 
 --------------------------------------------------
 -- Lists
