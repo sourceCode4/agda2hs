@@ -1,3 +1,4 @@
+{-# LANGUAGE NamedFieldPuns #-}
 module Agda2Hs.Compile.Record where
 
 import Control.Monad ( unless )
@@ -14,12 +15,12 @@ import Agda.Compiler.Backend
 
 import Agda.Syntax.Common ( Arg(unArg), defaultArg )
 import Agda.Syntax.Internal
+import Agda.Syntax.Common.Pretty ( prettyShow )
 
 import Agda.TypeChecking.Pretty ( ($$), (<+>), text, vcat )
 import Agda.TypeChecking.Substitute ( TelV(TelV), Apply(apply) )
 import Agda.TypeChecking.Telescope
 
-import Agda.Utils.Pretty ( prettyShow )
 import Agda.Utils.Impossible ( __IMPOSSIBLE__ )
 
 import Agda2Hs.AgdaUtils
@@ -88,7 +89,7 @@ compileMinRecords def sls = do
   return ([minPragma | not (null prims)] ++ Map.elems decls)
 
 compileRecord :: RecordTarget -> Definition -> C (Hs.Decl ())
-compileRecord target def = setCurrentRange (nameBindingSite $ qnameName $ defName def) $ do
+compileRecord target def = do
   TelV tel _ <- telViewUpTo recPars (defType def)
   addContext tel $ checkingVars $ do
     checkValidTypeName rName
@@ -123,7 +124,7 @@ compileRecord target def = setCurrentRange (nameBindingSite $ qnameName $ defNam
     -- record module has been opened.
     checkFieldInScope f = isInScopeUnqualified f >>= \case
       True  -> return ()
-      False -> setCurrentRange (nameBindingSite $ qnameName f) $ genericError $
+      False -> setCurrentRangeQ f $ genericError $
         "Record projections (`" ++ prettyShow (qnameName f) ++
         "` in this case) must be brought into scope when compiling to Haskell record types. " ++
         "Add `open " ++ Hs.prettyPrint rName ++ " public` after the record declaration to fix this."
@@ -168,7 +169,11 @@ compileRecord target def = setCurrentRange (nameBindingSite $ qnameName $ defNam
       return $ Hs.DataDecl () don Nothing hd [conDecl] ds
 
 checkUnboxPragma :: Defn -> C ()
-checkUnboxPragma def@Record{ recFields = (f:fs) }
-  | keepArg f , all (not . keepArg) fs , not (recRecursive def) = return ()
-checkUnboxPragma _ = genericError $
-  "An unboxed type must be a non-recursive record type with exactly one non-erased field."
+checkUnboxPragma def
+  | Record{recFields} <- def
+  , length (filter keepArg recFields) == 1
+  , not (recRecursive def)
+  = return ()
+
+  | otherwise
+  = genericError "An unboxed type must be a non-recursive record type with exactly one non-erased field."

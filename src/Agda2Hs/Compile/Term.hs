@@ -10,6 +10,8 @@ import qualified Data.Text as Text ( unpack )
 
 import qualified Language.Haskell.Exts as Hs
 
+import Agda.Syntax.Common.Pretty ( prettyShow )
+import qualified Agda.Syntax.Common.Pretty as P
 import Agda.Syntax.Common
 import Agda.Syntax.Literal
 import Agda.Syntax.Internal
@@ -20,8 +22,6 @@ import Agda.TypeChecking.Reduce ( instantiate )
 import Agda.TypeChecking.Substitute ( Apply(applyE) )
 
 import Agda.Utils.Lens
-import Agda.Utils.Pretty ( prettyShow )
-import qualified Agda.Utils.Pretty as P
 
 import Agda.Utils.Impossible ( __IMPOSSIBLE__ )
 import Agda.Utils.Monad
@@ -33,7 +33,7 @@ import Agda2Hs.Compile.Types
 import Agda2Hs.Compile.Utils
 import Agda2Hs.HsUtils
 
-import {-# SOURCE #-} Agda2Hs.Compile.Function ( compileClause )
+import {-# SOURCE #-} Agda2Hs.Compile.Function ( compileClause' )
 
 isSpecialTerm :: QName -> Maybe (QName -> Elims -> C (Hs.Exp ()))
 isSpecialTerm q = case prettyShow q of
@@ -56,23 +56,6 @@ isSpecialCon = prettyShow >>> \case
   "Haskell.Prim.Tuple._;_" -> Just tupleTerm
   _ -> Nothing
 
-fromNat :: QName -> Elims -> C (Hs.Exp ())
-fromNat _ es = compileElims es <&> \case
-  _ : n@Hs.Lit{} : es' -> n `eApp` es'
-  es'                  -> hsVar "fromIntegral" `eApp` drop 1 es'
-
-fromNeg :: QName -> Elims -> C (Hs.Exp ())
-fromNeg _ es = compileElims es <&> \case
-  _ : n@Hs.Lit{} : es' -> Hs.NegApp () n `eApp` es'
-  es'                  -> (hsVar "negate" `o` hsVar "fromIntegral") `eApp` drop 1 es'
-  where
-    f `o` g = Hs.InfixApp () f (Hs.QVarOp () $ hsUnqualName "_._") g
-
-fromString :: QName -> Elims -> C (Hs.Exp ())
-fromString _ es = compileElims es <&> \case
-  _ : s@Hs.Lit{} : es' -> s `eApp` es'
-  es'                  -> hsVar "fromString" `eApp` drop 1 es'
-
 tupleTerm :: ConHead -> ConInfo -> Elims -> C (Hs.Exp ())
 tupleTerm cons i es = do
   let v   = Con cons i es
@@ -90,25 +73,61 @@ ifThenElse _ es = compileElims es >>= \case
   -- partially applied
   _ -> genericError $ "if_then_else must be fully applied"
 
+specialClassFunction :: Hs.Exp () -> ([Hs.Exp ()] -> Hs.Exp ()) -> Elims -> C (Hs.Exp ())
+specialClassFunction v f [] = return v
+specialClassFunction v f (Apply w : es) = do
+  checkInstance $ unArg w
+  f <$> compileElims es
+specialClassFunction v f (_ : _) = __IMPOSSIBLE__
+
+specialClassFunction1 :: Hs.Exp () -> (Hs.Exp () -> Hs.Exp ()) -> Elims -> C (Hs.Exp ())
+specialClassFunction1 v f = specialClassFunction v $ \case
+  (a : es) -> f a `eApp` es
+  []       -> v
+
+specialClassFunction2 :: Hs.Exp () -> (Hs.Exp () -> Hs.Exp () -> Hs.Exp ()) -> Elims -> C (Hs.Exp ())
+specialClassFunction2 v f = specialClassFunction v $ \case
+  (a : b : es) -> f a b `eApp` es
+  es           -> v `eApp` es
+
+specialClassFunction3 :: Hs.Exp () -> (Hs.Exp () -> Hs.Exp () -> Hs.Exp () -> Hs.Exp ()) -> Elims -> C (Hs.Exp ())
+specialClassFunction3 v f = specialClassFunction v $ \case
+  (a : b : c : es) -> f a b c `eApp` es
+  es               -> v `eApp` es
+
+fromNat :: QName -> Elims -> C (Hs.Exp ())
+fromNat _ = specialClassFunction1 (hsVar "fromIntegral") $ \case
+  n@Hs.Lit{} -> n
+  v          -> hsVar "fromIntegral" `eApp` [v]
+
+fromNeg :: QName -> Elims -> C (Hs.Exp ())
+fromNeg _ = specialClassFunction1 negFromIntegral $ \case
+  n@Hs.Lit{} -> Hs.NegApp () n
+  v          -> negFromIntegral `eApp` [v]
+  where
+    negFromIntegral = hsVar "negate" `o` hsVar "fromIntegral"
+    f `o` g = Hs.InfixApp () f (Hs.QVarOp () $ hsUnqualName "_._") g
+
+fromString :: QName -> Elims -> C (Hs.Exp ())
+fromString _ = specialClassFunction1 (hsVar "fromString") $ \case
+  s@Hs.Lit{} -> s
+  v          -> hsVar "fromString" `eApp` [v]
+
 mkEnumFrom :: QName -> Elims -> C (Hs.Exp ())
-mkEnumFrom q es = compileElims es >>= \case
-  _ : a : es' -> return $ Hs.EnumFrom () a `eApp` es'
-  es'         -> return $ hsVar "enumFrom" `eApp` drop 1 es'
+mkEnumFrom _ = specialClassFunction1 (hsVar "enumFrom") $
+  \a -> Hs.EnumFrom () a
 
 mkEnumFromTo :: QName -> Elims -> C (Hs.Exp ())
-mkEnumFromTo q es = compileElims es >>= \case
-  _ : a : b : es' -> return $ Hs.EnumFromTo () a b `eApp` es'
-  es'             -> return $ hsVar "enumFromTo" `eApp` drop 1 es'
+mkEnumFromTo _ = specialClassFunction2 (hsVar "enumFromTo") $
+  \a b -> Hs.EnumFromTo () a b
 
 mkEnumFromThen :: QName -> Elims -> C (Hs.Exp ())
-mkEnumFromThen q es = compileElims es >>= \case
-  _ : a : a' : es' -> return $ Hs.EnumFromThen () a a' `eApp` es'
-  es'              -> return $ hsVar "enumFromThen" `eApp` drop 1 es'
+mkEnumFromThen _ = specialClassFunction2 (hsVar "enumFromThen") $
+  \a b -> Hs.EnumFromThen () a b
 
 mkEnumFromThenTo :: QName -> Elims -> C (Hs.Exp ())
-mkEnumFromThenTo q es = compileElims es >>= \case
-  _ : a : a' : b : es' -> return $ Hs.EnumFromThenTo () a a' b `eApp` es'
-  es'                  -> return $ hsVar "enumFromThenTo" `eApp` drop 1 es'
+mkEnumFromThenTo _ = specialClassFunction3 (hsVar "enumFromThenTo") $
+  \a b c -> Hs.EnumFromThenTo () a b c
 
 delay :: QName -> Elims -> C (Hs.Exp ())
 delay _ = compileErasedApp
@@ -160,14 +179,13 @@ caseOf _ es = compileElims es >>= \case
   _ -> genericError $ "case_of_ must be fully applied to a lambda"
 
 lambdaCase :: QName -> Elims -> C (Hs.Exp ())
-lambdaCase q es = setCurrentRange (nameBindingSite $ qnameName q) $ do
+lambdaCase q es = setCurrentRangeQ q $ do
   Function{funClauses = cls, funExtLam = Just ExtLamInfo {extLamModule = mname}}
     <- theDef <$> getConstInfo q
   npars <- size <$> lookupSection mname
   let (pars, rest) = splitAt npars es
       cs           = applyE cls pars
-  ls   <- filter (`extLamUsedIn` cs) <$> asks locals
-  cs   <- withLocals ls $ mapM (compileClause (qnameModule q) $ hsName "(lambdaCase)") cs
+  cs <- mapMaybeM (compileClause' (qnameModule q) $ hsName "(lambdaCase)") cs
   case cs of
     -- If there is a single clause and all patterns got erased, we
     -- simply return the body.
@@ -190,6 +208,7 @@ compileLiteral (LitString t) = return $ Hs.Lit () $ Hs.String () s s
   where s = Text.unpack t
 compileLiteral l               = genericDocError =<< text "bad term:" <?> prettyTCM (Lit l)
 
+-- | Compile a variable. If the check is enabled, ensures the variable is usable and visible.
 compileVar :: Nat -> C String
 compileVar x = do
   (d, n) <- (fmap snd &&& fst . unDom) <$> lookupBV x
@@ -204,30 +223,36 @@ compileVar x = do
 compileTerm :: Term -> C (Hs.Exp ())
 compileTerm v = do
   reportSDoc "agda2hs.compile" 7 $ text "compiling term:" <+> prettyTCM v
-  reportSDoc "agda2hs.compile" 27 $ text "compiling term:" <+> pure (P.pretty v)
+  reportSDoc "agda2hs.compile" 27 $ text "compiling term:" <+> pure (P.pretty $ unSpine1 v)
   case unSpine1 v of
     Var x es   -> do
       s <- compileVar x
       hsVar s `app` es
     -- v currently we assume all record projections are instance
     -- args that need attention
-    Def f es
-      | Just semantics <- isSpecialTerm f -> semantics f es
+    Def f es -> maybeUnfoldCopy f es compileTerm $ \f es -> if
+      | Just semantics <- isSpecialTerm f -> do
+          reportSDoc "agda2hs.compile.term" 12 $ text "Compiling application of special function"
+          semantics f es
       | otherwise -> isClassFunction f >>= \case
-        True  -> compileClassFunApp f es
-        False -> (isJust <$> isUnboxProjection f) `or2M` isTransparentFunction f >>= \case
-          True  -> compileErasedApp es
-          False -> do
-            -- Drop module parameters (unless projection-like)
-            n <- (theDef <$> getConstInfo f) >>= \case
-              Function{ funProjection = Right{} } -> return 0
-              _ -> size <$> lookupSection (qnameModule f)
-            (`app` drop n es) . Hs.Var () =<< compileQName f
-    Con h i es
-      | Just semantics <- isSpecialCon (conName h) -> semantics h i es
-    Con h i es -> isUnboxConstructor (conName h) >>= \case
-      Just _  -> compileErasedApp es
-      Nothing -> (`app` es) . Hs.Con () =<< compileQName (conName h)
+          True  -> compileClassFunApp f es
+          False -> (isJust <$> isUnboxProjection f) `or2M` isTransparentFunction f >>= \case
+            True  -> compileErasedApp es
+            False -> do
+              reportSDoc "agda2hs.compile.term" 12 $ text "Compiling application of regular function"
+              -- Drop module parameters of local `where` functions
+              moduleArgs <- getDefFreeVars f
+              reportSDoc "agda2hs.compile.term" 15 $ text "Module arguments for" <+> (prettyTCM f <> text ":") <+> prettyTCM moduleArgs
+              (`app` drop moduleArgs es) . Hs.Var () =<< compileQName f
+    Con h i es -> do
+      reportSDoc "agda2hs.compile" 8 $ text "reached constructor:" <+> prettyTCM (conName h)
+      -- the constructor may be a copy introduced by module application,
+      -- therefore we need to find the original constructor
+      info <- getConstInfo (conName h)
+      if not (defCopy info)
+        then compileCon h i es
+        else let Constructor{conSrcCon = c} = theDef info in
+             compileCon c ConOSystem es
     Lit l -> compileLiteral l
     Lam v b | usableModality v, getOrigin v == UserWritten -> do
       when (patternInTeleName `isPrefixOf` absName b) $ genericDocError =<< do
@@ -251,19 +276,31 @@ compileTerm v = do
     t -> genericDocError =<< text "bad term:" <?> prettyTCM t
   where
     app :: Hs.Exp () -> Elims -> C (Hs.Exp ())
-    app hd es = eApp <$> pure hd <*> compileElims es
+    app hd es = eApp hd <$> compileElims es
+
+    compileCon :: ConHead -> ConInfo -> Elims -> C (Hs.Exp ())
+    compileCon h i es
+      | Just semantics <- isSpecialCon (conName h)
+      = semantics h i es
+    compileCon h i es =
+      isUnboxConstructor (conName h) >>= \case
+        Just _  -> compileErasedApp es
+        Nothing -> (`app` es) . Hs.Con () =<< compileQName (conName h)
 
 -- `compileErasedApp` compiles an application of an erased constructor
 -- or projection.
 compileErasedApp :: Elims -> C (Hs.Exp ())
-compileErasedApp es = compileElims es >>= \case
-  []     -> return $ hsVar "id"
-  (v:vs) -> return $ v `eApp` vs
+compileErasedApp es = do
+  reportSDoc "agda2hs.compile.term" 12 $ text "Compiling application of erased function"
+  compileElims es >>= \case
+    []     -> return $ hsVar "id"
+    (v:vs) -> return $ v `eApp` vs
 
 -- `compileClassFunApp` is used when we have a record projection and we want to
 -- drop the first visible arg (the record)
 compileClassFunApp :: QName -> Elims -> C (Hs.Exp ())
 compileClassFunApp f es = do
+  reportSDoc "agda2hs.compile.term" 14 $ text "Compiling application of class function"
   hf <- compileQName f
   case dropWhile notVisible (fromMaybe __IMPOSSIBLE__ $ allApplyElims es) of
     []     -> __IMPOSSIBLE__

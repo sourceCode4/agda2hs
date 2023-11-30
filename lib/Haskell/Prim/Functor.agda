@@ -3,6 +3,7 @@ module Haskell.Prim.Functor where
 
 open import Haskell.Prim
 open import Haskell.Prim.Either
+open import Haskell.Prim.IO
 open import Haskell.Prim.List
 open import Haskell.Prim.Maybe
 open import Haskell.Prim.Tuple
@@ -18,8 +19,8 @@ record Functor (f : Set → Set) : Set₁ where
     fmap : (a → b) → f a → f b
     _<$>_ : (a → b) → f a → f b
     _<&>_ : f a → (a → b) → f b
-    _<$_ : a → f b → f a
-    _$>_ : f a → b → f b
+    _<$_ : (@0 {{ b }} → a) → f b → f a
+    _$>_ : f a → (@0 {{ a }} → b) → f b
     void : f a → f (Tuple [])
 -- ** defaults
 record DefaultFunctor (f : Set → Set) : Set₁ where
@@ -34,10 +35,10 @@ record DefaultFunctor (f : Set → Set) : Set₁ where
   _<&>_ : f a → (a → b) → f b
   m <&> f = fmap f m
 
-  _<$_ : a → f b → f a
-  x <$ m = fmap (const x) m
+  _<$_ : (@0 {{ b }} → a) → f b → f a
+  x <$ m = fmap (λ b → x {{b}}) m
 
-  _$>_ : f a → b → f b
+  _$>_ : f a → (@0 {{ a }} → b) → f b
   m $> x = x <$ m
 
   void : f a → f (Tuple [])
@@ -77,3 +78,5 @@ instance
 
   iFunctorTuple₄ : Functor (λ d → Tuple (a ∷ b ∷ c ∷ d ∷ []))
   iFunctorTuple₄ = fmap= λ f (x ; y ; z ; w ; tt) → x ; y ; z ; f w ; tt
+
+instance postulate iFunctiorIO : Functor IO

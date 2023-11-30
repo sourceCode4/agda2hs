@@ -242,7 +242,7 @@ While in Haskell such a thing is never necessary, in Agda there are cases when i
 The type signatures of both `if_then_else_` and `case_of_` on the Agda side contain instances of these proofs which can be used to work with e.g. intrinsic verification.
 
 This allows for the following Agda code to type check:
-```
+```agda
 data Range : Set where
     MkRange : (low high : Int)
             → {{ @0 h : ((low <= high) ≡ True) }}
@@ -279,9 +279,10 @@ createRangeCase low high
         False -> Nothing
 ```
 
+(0-Quantity)=
 ## 0-Quantity Parameters
 
-Parameters can be annotated with a _quantiy_ of either `0` or `ω` (the default quantity is `ω` if not quantity is explicitly annotated). Such parameters are irrelevant to evaluation, so they are irrelevant to the compiled Haskell program, and so agda2hs erases them.
+Parameters can be annotated with a _quantity_ of either `0` or `ω` (the default quantity is `ω` if no quantity is explicitly annotated). Such parameters are irrelevant to evaluation, so they are irrelevant to the compiled Haskell program, and so agda2hs erases them.
 
 Agda:
 ```agda
@@ -760,7 +761,7 @@ class ImplicitField a where
 
 ## Haskell Language Extensions
 
-Required haskell langauge extensions will be automatically inferred and enabled.
+Required haskell language extensions will be automatically inferred and enabled.
 
 A Haskell language extension can also be enabled manually as follows:
 
@@ -891,5 +892,189 @@ testA = A.foo
 testB = A.foo
 ```
 
+# Rewrite rules and Prelude imports
 
+## Rewrite rules
+
+User-defined rewrite rules can be defined through a YAML configuration
+file. It is enabled with the `--config` option.
+
+This feature is particularly useful if you have a project depending on a large
+library which is not agda2hs-compatible (e.g the standard library).
+In this case, you might not want to rewrite the entire library, but may
+still rely on it for proofs.
+
+User-defined rewrite rules can help translating the library functions to ones available
+in the Haskell Prelude, or even to those written by yourself. In the latter
+case, place a Haskell file (e.g. `Base.hs`) next to your `.agda` files that
+contains your custom definitions and provide this custom module in the
+`importing` clauses of the config file.
+
+To an extent, this compromises the mathematically proven correctness of your project.
+But if you trust that your (or Prelude's) functions are equivalent to the original ones,
+this might not be a problem.
+You can also prove the equivalence of the two definitions to be safe.
+
+For example, let's suppose we want to compile the following file:
+
+```agda
+open import Data.Nat as ℕ
+open import Data.Integer as ℤ
+open import Data.Rational.Unnormalised as ℚ
+
+double : ℚᵘ → ℚᵘ
+double p = (+ 2 / 1) ℚ.* p
+{-# COMPILE AGDA2HS double #-}
+
+-- this will use denominator-1 and suc from BaseExample.hs
+twoDenoms : ℚᵘ → ℕ
+twoDenoms p = 2 ℕ.* (ℕ.suc (ℚᵘ.denominator-1 p))
+{-# COMPILE AGDA2HS twoDenoms #-}
+```
+
+By default, the output would be this:
+
+```hs
+module Example where
+
+import Data.Rational.Unnormalised.Base (ℚᵘ(denominator-1), (/))
+import qualified Data.Rational.Unnormalised.Base as ℚ ((*))
+import Numeric.Natural (Natural)
+import qualified Prelude as ℕ ((*))
+
+double :: ℚᵘ -> ℚᵘ
+double p = (ℚ.*) (pos 2 / 1) p
+
+twoDenoms :: ℚᵘ -> Natural
+twoDenoms p = (ℕ.*) 2 (suc (denominator-1 p))
+```
+
+Here, agda2hs doesn't know where to find these definitions; so it simply leaves them as they are.
+
+Run this again with the following config file:
+
+```yaml
+rewrites:
+  - from: "Agda.Builtin.Nat.Nat.suc"
+    to: "suc"
+    importing: "BaseExample"
+  - from: "Agda.Builtin.Nat._*_"
+    to: "_*_"
+    importing: "Prelude"
+  - from: "Agda.Builtin.Int.Int.pos"
+    to: "toInteger"
+    importing: "Prelude"
+  - from: "Data.Rational.Unnormalised.Base.ℚᵘ"
+    to: "Rational"
+    importing: "Data.Ratio"
+  - from: "Data.Rational.Unnormalised.Base._*_"
+    to: "_*_"
+    importing: "Prelude"
+  - from: "Data.Rational.Unnormalised.Base._/_"
+    to: "_%_"
+    importing: "Data.Ratio"
+  - from: "Data.Rational.Unnormalised.Base.ℚᵘ.denominator-1"
+    to: "denominatorMinus1"
+    importing: "BaseExample"
+```
+
+The names are a bit difficult to find. It helps if you run agda2hs with a verbosity level of 26 and check the logs (specifically the parts beginning with `compiling name`).
+
+The output is now this:
+
+```hs
+module Example where
+
+import BaseExample (denominatorMinus1, suc)
+import Data.Ratio (Rational, (%))
+import Numeric.Natural (Natural)
+import Prelude (toInteger, (*))
+
+double :: Rational -> Rational
+double p = toInteger 2 % 1 * p
+
+twoDenoms :: Rational -> Natural
+twoDenoms p = 2 * suc (denominatorMinus1 p)
+```
+
+With a manually written `BaseExample.hs` file like this, GHCi accepts it:
+
+```hs
+module BaseExample where
+
+import Numeric.Natural
+import Data.Ratio
+
+suc :: Natural -> Natural
+suc = (1 +)
+
+denominatorMinus1 :: Rational -> Natural
+denominatorMinus1 = fromIntegral . denominator
+```
+
+See also `rewrite-rules-example.yaml` in the root of the repository.
+
+## Handling of Prelude
+
+By default, agda2hs handles Prelude like other modules: it collects all the
+identifiers it finds we use from Prelude, and adds them to Prelude's import
+list.
+
+A different behaviour can be specified in a YAML configuration file.
+The format is the following:
+
+```yaml
+# First, we specify how to handle Prelude.
+prelude:
+  implicit: true
+  hiding:           # if implicit is true
+    - seq
+
+  #using:           # if implicit is false
+  #  - +
+  #  - Num
+
+# Then the rules themselves.
+rewrites:
+
+  # The rational type.
+  - from: "Data.Rational.Unnormalised.Base.ℚᵘ"
+    to: "Rational"
+    importing: "Data.Ratio"
+
+  # ...
+```
+
+If `implicit` is `true`, then everything gets imported from Prelude, except for those that are specified in the `hiding` list. This can cause clashes if you reuse names from Prelude, hence the opportunity for a `hiding` list. If there is no such list, then everything gets imported.
+
+If `implicit` is `false`, Prelude gets imported explicitly, and only those identifiers that are specified in the `using` list. If there is no such list, agda2hs reverts to the default behaviour (it tries to collect imports by itself).
+
+## Known issues
+
+- Rewrite rules only work for things you do use, not for those that you only define. This causes a problem with class instances: if you choose the default behaviour, then write an instance of the Num class and define signum but do not use it, it will not get into Prelude's import list, and so GHC will complain.
+- You cannot change to a version with arguments of different modality without getting useless code. So if you rewrite a function to a version which has some of its parameters erased, the parameters remain there; probably because rewriting happens only after compiling the type signature.
+
+# Emacs mode
+
+Since there is a full Agda typechecker in the `agda2hs` binary, using a "normal"
+Agda installation beside agda2hs can cause a problem: they will check every dependency
+again each time you switch from one to another. This problem becomes especially
+inconvenient when working with the Emacs mode.
+
+That's why agda2hs comes with a full Agda mode, which uses the Agda typechecker
+built into the binary. Installation is roughly the same as with Agda, except that
+you use `agda2hs-mode` instead of `agda-mode`.
+
+With `C-c C-x C-c`, you can even call the `agda2hs` backend from inside Emacs;
+but all the usual backends are available, too.
+
+## Known issues
+
+- Switching versions doesn't work yet.
+- Documentation and help string are simply taken from the vanilla Agda version.
+- Now, the output can only be written next to the `.agda` files;
+  there is no option to collect these under a separate directory.
+- The `--config` option is not yet supported in Emacs mode.
+- There might be problems when both the vanilla Agda mode and agda2hs-mode are installed.
+  For now, it is recommended to install only the agda2hs version.
 

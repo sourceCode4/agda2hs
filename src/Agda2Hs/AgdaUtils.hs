@@ -2,6 +2,7 @@ module Agda2Hs.AgdaUtils where
 
 import Data.Data
 import Data.Monoid ( Any(..) )
+import qualified Data.Map as Map
 import Data.Maybe ( fromMaybe )
 
 import Agda.Compiler.Backend hiding ( Args )
@@ -9,18 +10,23 @@ import Agda.Compiler.Backend hiding ( Args )
 import Agda.Interaction.FindFile ( findFile' )
 
 import Agda.Syntax.Common ( Arg, defaultArg )
+import Agda.Syntax.Common.Pretty ( prettyShow )
+import qualified Agda.Syntax.Concrete as C
 import Agda.Syntax.Internal
 import Agda.Syntax.Internal.Names
+import Agda.Syntax.Scope.Base
+import Agda.Syntax.Scope.Monad
 import Agda.Syntax.TopLevelModuleName
 
 import Agda.TypeChecking.Monad ( topLevelModuleName )
-import Agda.TypeChecking.Pretty 
+import Agda.TypeChecking.Pretty
 import Agda.TypeChecking.Substitute
+import Agda.TypeChecking.Reduce ( reduceDefCopy )
 
 import Agda.Utils.Either ( isRight )
 import Agda.Utils.List ( initMaybe )
+import qualified Agda.Utils.List1 as List1
 import Agda.Utils.Monad ( ifM )
-import Agda.Utils.Pretty ( prettyShow )
 import Agda.Utils.Impossible ( __IMPOSSIBLE__ )
 
 import AgdaInternals
@@ -65,11 +71,12 @@ unSpine1 v =
         e        : es' -> loop h (e : res) es'
       where v = h $ reverse res
 
+-- | Map over the body of all clauses of a function definition.
 mapDef :: (Term -> Term) -> Definition -> Definition
 mapDef f d = d{ theDef = mapDefn (theDef d) }
   where
     mapDefn def@Function{} = def{ funClauses = map mapClause (funClauses def) }
-    mapDefn defn = defn -- We only need this for Functions
+    mapDefn defn = defn
 
     mapClause c = c{ clauseBody = f <$> clauseBody c }
 
@@ -81,14 +88,35 @@ isTopLevelModule m = do
   tlm <- topLevelModuleNameForModuleName m
   ifM (isRight <$> findFile' tlm) (return $ Just tlm) (return Nothing)
 
-getTopLevelModuleForModuleName :: ModuleName -> TCM (Maybe TopLevelModuleName)
+-- | Get the toplevel module parent to a given module.
+getTopLevelModuleForModuleName :: ModuleName -> TCM TopLevelModuleName
 getTopLevelModuleForModuleName = loop . mnameToList
   where
     loop ns
-      | null ns   = return Nothing
+      | null ns   = __IMPOSSIBLE__
       | otherwise = isTopLevelModule (MName ns) >>= \case
-        Nothing      -> loop (init ns)
-        tlm@(Just _) -> return tlm
+          Nothing  -> loop (init ns)
+          Just tlm -> return tlm
 
-getTopLevelModuleForQName :: QName -> TCM (Maybe TopLevelModuleName)
+-- | Get the toplevel module parent to a given a name.
+getTopLevelModuleForQName :: QName -> TCM TopLevelModuleName
 getTopLevelModuleForQName = getTopLevelModuleForModuleName . qnameModule
+
+lookupModuleInCurrentModule :: C.Name -> TCM [AbstractModule]
+lookupModuleInCurrentModule x =
+  List1.toList' . Map.lookup x . nsModules . thingsInScope [PublicNS, PrivateNS] <$> getCurrentScope
+
+-- | Try to unfold a definition if introduced by module application.
+maybeUnfoldCopy
+  :: PureTCM m
+  => QName -- ^ Name of the definition.
+  -> Elims
+  -> (Term -> m a)
+  -- ^ Callback if the definition is indeed a copy.
+  -> (QName -> Elims -> m a)
+  -- ^ Callback if the definition isn't a copy.
+  -> m a
+maybeUnfoldCopy f es onTerm onDef =
+  reduceDefCopy f es >>= \case
+    NoReduction ()   -> onDef f es
+    YesReduction _ t -> onTerm t

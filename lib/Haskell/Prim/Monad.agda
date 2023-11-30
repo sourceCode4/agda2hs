@@ -6,6 +6,7 @@ open import Haskell.Prim.Applicative
 open import Haskell.Prim.Either
 open import Haskell.Prim.Foldable
 open import Haskell.Prim.Functor
+open import Haskell.Prim.IO
 open import Haskell.Prim.List
 open import Haskell.Prim.Maybe
 open import Haskell.Prim.Monoid
@@ -23,7 +24,7 @@ module Do where
       _>>=_ : m a → (a → m b) → m b
       overlap ⦃ super ⦄ : Applicative m
       return : a → m a
-      _>>_ : m a → m b → m b
+      _>>_ : m a → (@0 {{ a }} → m b) → m b
       _=<<_ : (a → m b) → m a → m b
   -- ** defaults
   record DefaultMonad (m : Set → Set) : Set₁ where
@@ -33,8 +34,8 @@ module Do where
     return : a → m a
     return = pure
 
-    _>>_ : m a → m b → m b
-    m >> m₁ = m >>= λ _ → m₁
+    _>>_ : m a → (@0 {{ a }} → m b) → m b
+    m >> m₁ = m >>= λ x → m₁ {{x}}
 
     _=<<_ : (a → m b) → m a → m b
     _=<<_ = flip _>>=_
@@ -51,7 +52,7 @@ module Dont where
   _>>=_ : ⦃ Monad m ⦄ → m a → (a → m b) → m b
   _>>=_ = Do._>>=_
 
-  _>>_ : ⦃ Monad m ⦄ → m a → m b → m b
+  _>>_ : ⦃ Monad m ⦄ → m a → (@0 {{ a }} → m b) → m b
   _>>_ = Do._>>_
 
 open Do public
@@ -60,7 +61,7 @@ mapM₋ : ⦃ Monad m ⦄ → ⦃ Foldable t ⦄ → (a → m b) → t a → m �
 mapM₋ f = foldr (λ x k → f x >> k) (pure tt)
 
 sequence₋ : ⦃ Monad m ⦄ → ⦃ Foldable t ⦄ → t (m a) → m ⊤
-sequence₋ = foldr _>>_ (pure tt)
+sequence₋ = foldr (λ mx my → mx >> my) (pure tt)
 
 -- ** instances
 private
@@ -96,6 +97,8 @@ instance
   iMonadTuple₄ = bind= λ (a ; b ; c ; x ; tt) k →
     case k x of λ where
       (a₁ ; b₁ ; c₁ ; y ; tt) → a <> a₁ ; b <> b₁ ; c <> c₁ ; y ; tt
+
+instance postulate iMonadIO : Monad IO
 
 record MonadFail (m : Set → Set) : Set₁ where
   field

@@ -18,7 +18,9 @@ import qualified Agda.Syntax.Concrete.Name as C
 import Agda.Syntax.Internal
 import Agda.Syntax.Position ( noRange )
 import Agda.Syntax.Scope.Base
-import Agda.Syntax.Scope.Monad ( bindVariable, freshConcreteName )
+import Agda.Syntax.Scope.Monad ( bindVariable, freshConcreteName, isDatatypeModule )
+import Agda.Syntax.Common.Pretty ( prettyShow )
+import qualified Agda.Syntax.Common.Pretty as P
 
 import Agda.TypeChecking.CheckInternal ( infer )
 import Agda.TypeChecking.Constraints ( noConstraints )
@@ -30,12 +32,10 @@ import Agda.TypeChecking.Monad.SizedTypes ( isSizeType )
 import Agda.TypeChecking.Pretty ( Doc, (<+>), text, PrettyTCM(..) )
 import Agda.TypeChecking.Records ( isRecordConstructor, getRecordOfField )
 import Agda.TypeChecking.Reduce ( instantiate, reduce )
-import Agda.TypeChecking.Substitute ( Subst, TelV(TelV) )
+import Agda.TypeChecking.Substitute ( Subst, TelV(TelV), Apply(..) )
 import Agda.TypeChecking.Telescope ( telView )
 
 import Agda.Utils.Lens ( (<&>) )
-import Agda.Utils.Pretty ( prettyShow )
-import qualified Agda.Utils.Pretty as P
 import Agda.Utils.Maybe
 import Agda.Utils.Monad
 import Agda.Utils.Singleton
@@ -157,6 +157,19 @@ dropClassModule m@(MName ns) = isClassModule m >>= \case
   True  -> dropClassModule $ MName $ init ns
   False -> return m
 
+moduleParametersToDrop :: ModuleName -> C Telescope
+moduleParametersToDrop mod = do
+   reportSDoc "agda2hs.moduleParameters" 25 $ text "Getting telescope for" <+> prettyTCM mod
+   isDatatypeModule mod >>= \case
+     Just _ -> return EmptyTel
+     Nothing -> do
+       reportSDoc "agda2hs.moduleParameters" 25 $ text "Current context: " <+> (prettyTCM =<< getContext)
+       ctxArgs <- getContextArgs
+       reportSDoc "agda2hs.moduleParameters" 25 $ text "Context arguments: " <+> prettyTCM ctxArgs
+       sec <- lookupSection mod
+       reportSDoc "agda2hs.moduleParameters" 25 $ text "Module section: " <+> prettyTCM sec
+       return $ sec `apply` ctxArgs
+
 isUnboxRecord :: QName -> C (Maybe Strictness)
 isUnboxRecord q = do
   getConstInfo q >>= \case
@@ -240,7 +253,7 @@ checkValidFunName x = unless (validVarName x) $ genericDocError =<< do
   text "Invalid name for Haskell function: " <+> text (Hs.prettyPrint x)
 
 checkValidTypeName :: Hs.Name () -> C ()
-checkValidTypeName x = unless (validConName x) $ genericDocError =<< do
+checkValidTypeName x = unless (validTypeName x) $ genericDocError =<< do
   text "Invalid name for Haskell type: " <+> text (Hs.prettyPrint x)
 
 checkValidConName :: Hs.Name () -> C ()

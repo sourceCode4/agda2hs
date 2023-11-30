@@ -28,8 +28,37 @@ type Ranged a    = (Range, a)
 
 type Code = (Hs.Module Hs.SrcSpanInfo, [Hs.Comment])
 
-data Options = Options { optOutDir     :: Maybe FilePath,
-                         optExtensions :: [Hs.Extension] }
+-- | Custom substitution for a given definition.
+data Rewrite = Rewrite
+  { rewFrom   :: String
+    -- ^ The fully qualified name.
+  , rewTo     :: String
+    -- ^ The corresponding Haskell name.
+  , rewImport :: Maybe String
+    -- ^ Haskell module to import.
+  }
+
+type Rewrites = [Rewrite]
+
+-- | A lookup table for rewrite rules.
+type SpecialRules = Map String (Hs.Name (), Maybe Import)
+
+data PreludeOptions = PreludeOpts
+  { preludeImplicit :: Bool
+  , preludeImports  :: Maybe [String]
+  , preludeHiding   :: [String]
+  }
+  -- ^ whether Prelude functions should be implicitly imported; if yes, then NamesToImport is a "hiding" list
+
+
+data Options = Options
+  { optIsEnabled  :: Bool
+  , optOutDir     :: Maybe FilePath
+  , optConfigFile :: Maybe FilePath
+  , optExtensions :: [Hs.Extension]
+  , optRewrites   :: SpecialRules
+  , optPrelude    :: PreludeOptions
+  }
 
 -- Required by Agda-2.6.2, but we don't really care.
 instance NFData Options where
@@ -46,6 +75,8 @@ data CompileEnv = CompileEnv
   -- ^ whether copatterns should be allowed when compiling patterns
   , checkVar :: Bool
   -- ^ whether to ensure compiled variables are usable and visible
+  , rewrites :: SpecialRules
+  -- ^ Special compilation rules.
   }
 
 type Qualifier = Maybe (Maybe (Hs.ModuleName ()))
@@ -63,6 +94,10 @@ data Import = Import
   , importQualified :: Qualifier
   , importParent    :: Maybe (Hs.Name ())
   , importName      :: Hs.Name ()
+  , importNamespace :: Hs.Namespace ()
+                    -- ^^ if this is a type or something like that, we can add a namespace qualifier to the import spec
+                    -- now it's only useful for differentiating type operators; so for others we always put Hs.NoNamespace () here
+                    -- (we don't calculate it if it's not necessary)
   }
 type Imports = [Import]
 
@@ -105,3 +140,9 @@ data DataTarget = ToData | ToDataNewType
 data RecordTarget = ToRecord [Hs.Deriving ()] | ToRecordNewType [Hs.Deriving ()] | ToClass [String]
 
 data InstanceTarget = ToDefinition | ToDerivation (Maybe (Hs.DerivStrategy ()))
+
+-- Used when compiling imports. If there is a type operator, we can append a "type" namespace here.
+data NamespacedName = NamespacedName { nnNamespace :: Hs.Namespace (),
+                                       nnName      :: Hs.Name ()
+                                     }
+                      deriving (Eq, Ord)
